@@ -46,7 +46,7 @@ def style_scores(elements, xp, style):
     return out
 
 
-def build(elements, xp, style, budget=100.0, min_spend=0.0):
+def build(elements, xp, style, budget=100.0, min_spend=0.0, bench_max=19.5):
     """Best squad for one style. Returns dict with squad, xi, bench, captain, vice, cost."""
     score = style_scores(elements, xp, style)
     ids = list(score)
@@ -57,9 +57,9 @@ def build(elements, xp, style, budget=100.0, min_spend=0.0):
     # starters count fully, captain twice, bench a little (so it isn't junk)
     m += pulp.lpSum(score[i] * (s[i] + c[i] + 0.1 * x[i]) for i in ids)
     m += pulp.lpSum(elements[i]["now_cost"] * x[i] for i in ids) <= int(round(budget * 10))
-    if min_spend:  # use the budget on the STARTING XI (bench kept to about £18m): keeps premiums playing
+    if min_spend:  # use the budget, and keep the bench cheap, so the money goes on the STARTING XI
         m += pulp.lpSum(elements[i]["now_cost"] * x[i] for i in ids) >= int(round(min_spend * 10))
-        m += pulp.lpSum(elements[i]["now_cost"] * s[i] for i in ids) >= int(round((min_spend - 18) * 10))
+        m += pulp.lpSum(elements[i]["now_cost"] * (x[i] - s[i]) for i in ids) <= int(round(bench_max * 10))
     for pos, n in SQUAD.items():
         m += pulp.lpSum(x[i] for i in ids if elements[i]["element_type"] == pos) == n
         m += pulp.lpSum(s[i] for i in ids if elements[i]["element_type"] == pos) >= XI_MIN[pos]

@@ -37,9 +37,9 @@ def test_three_teams_follow_fpl_rules():
     boot["elements"][0]["chance_of_playing_next_round"] = 50
     most = max(elements.values(), key=lambda p: float(p["selected_by_percent"]))["id"]
     for style in ("safe", "balanced", "bold"):
-        t = squads.build(elements, xp, style, 100.0, 97.0)
+        t = squads.build(elements, xp, style, 100.0, 97.0, 19.5)
         assert len(t["squad"]) == 15 and len(t["xi"]) == 11 and 97.0 <= t["cost"] <= 100.0
-        assert sum(p["now_cost"] for p in t["bench"]) / 10 <= 18.0 + 1e-9
+        assert sum(p["now_cost"] for p in t["bench"]) / 10 <= 19.5 + 1e-9
         assert Counter(p["element_type"] for p in t["squad"]) == {1: 2, 2: 5, 3: 5, 4: 3}
         assert max(Counter(p["team"] for p in t["squad"]).values()) <= 3
         f = Counter(p["element_type"] for p in t["xi"])

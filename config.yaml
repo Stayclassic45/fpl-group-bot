@@ -6,6 +6,7 @@ timezone: Europe/Dublin
 
 budget: 100.0                 # £m for each of the 3 teams
 min_spend: 97.0               # each team must use at least this much (keeps premiums in)
+bench_max: 19.5               # the 4 subs may cost at most this, so the money goes on the XI
 lineup_hours_before: 30       # post "our 3 teams" this many hours before the deadline
 reminder_hours_before: 2.5    # post the deadline reminder this close to the deadline
 lookahead_gws: 3

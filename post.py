@@ -76,7 +76,7 @@ def expected_points(boot, fixtures, gw, cfg):
 def lineup_post(boot, fixtures, gw_event, cfg, tz):
     gw = gw_event["id"]
     elements, xp = expected_points(boot, fixtures, gw, cfg)
-    teams = {st: squads.build(elements, xp, st, cfg["budget"], cfg.get("min_spend", 0)) for st, _, _ in STYLES}
+    teams = {st: squads.build(elements, xp, st, cfg["budget"], cfg.get("min_spend", 0), cfg.get("bench_max", 19.5)) for st, _, _ in STYLES}
     deadline = when(gw_event["deadline_time"], tz)
     most_owned = max(elements.values(), key=lambda p: float(p.get("selected_by_percent") or 0))
     nm = lambda p: esc(p["web_name"])
