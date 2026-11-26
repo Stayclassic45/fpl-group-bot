@@ -57,7 +57,17 @@ def expected_points(boot, fixtures, gw, cfg):
     gws = [g for g in range(gw, gw + cfg["lookahead_gws"]) if g <= len(boot["events"])]
     finished = sum(1 for e in boot["events"] if e.get("finished"))
     tfix = fm.team_fixtures(fixtures, set(gws))
-    xp = {pid: fm.expected_points(e, tfix, gws, finished)[gw] for pid, e in elements.items()}
+    ours = {pid: fm.expected_points(e, tfix, gws, finished)[gw] for pid, e in elements.items()}
+    # Blend with FPL's own official forecast (ep_next) when it is available: our model
+    # alone leans too much on short-term form and undervalues premium players.
+    w = cfg.get("fpl_forecast_weight", 0.6)
+    xp = {}
+    for pid, e in elements.items():
+        try:
+            ep = float(e.get("ep_next"))
+        except (TypeError, ValueError):
+            ep = None
+        xp[pid] = ours[pid] if ep is None else w * ep + (1 - w) * ours[pid]
     return elements, xp
 
 

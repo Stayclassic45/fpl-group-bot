@@ -102,3 +102,12 @@ def test_auto_sub_and_vice_captain():
     mins = {1: 90, 2: 0, 3: 90, 10: 90, 11: 90}
     # captain 2 didn't play: outfield sub 11 comes in (keeper 10 can't), vice 3 is doubled
     assert post.team_points(t, pts, mins, keepers={1, 10}) == 2 + 6 + 4 + 6
+
+
+def test_fpl_forecast_is_blended_in():
+    boot, fixtures, *_ = fake_fpl()
+    _, ours = post.expected_points(boot, fixtures, 13, CFG | {"fpl_forecast_weight": 0.6})
+    boot["elements"][0]["ep_next"] = "10.0"
+    _, blended = post.expected_points(boot, fixtures, 13, CFG | {"fpl_forecast_weight": 0.6})
+    i = boot["elements"][0]["id"]
+    assert blended[i] == pytest.approx(0.6 * 10.0 + 0.4 * ours[i])
