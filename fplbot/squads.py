@@ -57,8 +57,9 @@ def build(elements, xp, style, budget=100.0, min_spend=0.0):
     # starters count fully, captain twice, bench a little (so it isn't junk)
     m += pulp.lpSum(score[i] * (s[i] + c[i] + 0.1 * x[i]) for i in ids)
     m += pulp.lpSum(elements[i]["now_cost"] * x[i] for i in ids) <= int(round(budget * 10))
-    if min_spend:  # use the budget: keeps premium players in the teams
+    if min_spend:  # use the budget on the STARTING XI (bench kept to about £18m): keeps premiums playing
         m += pulp.lpSum(elements[i]["now_cost"] * x[i] for i in ids) >= int(round(min_spend * 10))
+        m += pulp.lpSum(elements[i]["now_cost"] * s[i] for i in ids) >= int(round((min_spend - 18) * 10))
     for pos, n in SQUAD.items():
         m += pulp.lpSum(x[i] for i in ids if elements[i]["element_type"] == pos) == n
         m += pulp.lpSum(s[i] for i in ids if elements[i]["element_type"] == pos) >= XI_MIN[pos]

@@ -24,6 +24,8 @@ def _chunks(text):
 
 
 def send(text, dry_run=False):
+    if not dry_run:  # keep a copy of every real post in the job log
+        print("\n" + "=" * 20 + " SENDING " + "=" * 20 + "\n" + text)
     if dry_run:
         print("\n" + "=" * 20 + " POST " + "=" * 20 + "\n" + text)
         return True
