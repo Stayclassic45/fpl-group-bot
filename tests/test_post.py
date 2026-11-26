@@ -1,8 +1,14 @@
+import datetime as dt
+from collections import Counter
+
 import pytest
 
 import post
-from fplbot import model as fm
+from fplbot import squads
 from tests.fake_fpl import fake_fpl
+
+CFG = {"budget": 100.0, "lookahead_gws": 3, "lineup_hours_before": 30, "reminder_hours_before": 2.5,
+       "timezone": "Europe/Dublin"}
 
 
 @pytest.fixture
@@ -17,51 +23,82 @@ def wire(monkeypatch, data):
     boot, fixtures, history, picks, live = data
     monkeypatch.setattr(post.api, "bootstrap", lambda: boot)
     monkeypatch.setattr(post.api, "fixtures", lambda: fixtures)
-    monkeypatch.setattr(post.api, "history", lambda t: history)
-    monkeypatch.setattr(post.api, "picks", lambda t, g: picks)
     monkeypatch.setattr(post.api, "live", lambda g: live)
 
 
-def test_posts_result_then_lineup_once(sandbox, monkeypatch):
-    wire(monkeypatch, fake_fpl())
-    assert post.main([]) == 0
-    print("\n\n".join(sandbox))
-    result, lineup = sandbox
-    assert result.startswith("📊 <b>EdgeFinder Fantasy – Gameweek 12 result</b>") and "average 54" in result
-    assert lineup.startswith("⚽ <b>EdgeFinder Fantasy – Gameweek 13</b>")
-    assert lineup.count(" pts\n") == 11                       # 11 players, each with estimated points
-    for k in ("<b>1 FT:</b>", "<b>2 FT:</b>", "<b>3 FT:</b>", "Taking a -4 hit?", "Top buys by position"):
-        assert k in lineup
-    assert "5879611" not in lineup and "5879611" not in result  # team id never shown
-    sandbox.clear()
-    post.main([])
-    assert sandbox == []                                       # nothing twice
+def set_deadline(boot, gw, hours):
+    t = dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=hours)
+    next(e for e in boot["events"] if e["id"] == gw)["deadline_time"] = t.isoformat().replace("+00:00", "Z")
 
 
-def test_estimate_check_after_lineup(sandbox, monkeypatch):
-    data = fake_fpl()
+def test_three_teams_follow_fpl_rules():
+    boot, fixtures, *_ = fake_fpl()
+    elements, xp = post.expected_points(boot, fixtures, 13, CFG)
+    boot["elements"][0]["chance_of_playing_next_round"] = 50
+    most = max(elements.values(), key=lambda p: float(p["selected_by_percent"]))["id"]
+    for style in ("safe", "balanced", "bold"):
+        t = squads.build(elements, xp, style, 100.0)
+        assert len(t["squad"]) == 15 and len(t["xi"]) == 11 and t["cost"] <= 100.0
+        assert Counter(p["element_type"] for p in t["squad"]) == {1: 2, 2: 5, 3: 5, 4: 3}
+        assert max(Counter(p["team"] for p in t["squad"]).values()) <= 3
+        f = Counter(p["element_type"] for p in t["xi"])
+        assert f[1] == 1 and 3 <= f[2] <= 5 and 2 <= f[3] <= 5 and 1 <= f[4] <= 3
+        assert t["captain"] in t["xi"] and t["vice"] in t["xi"] and t["vice"] is not t["captain"]
+        if style == "bold":
+            assert most not in {p["id"] for p in t["squad"]}
+        if style == "safe":
+            assert boot["elements"][0]["id"] not in {p["id"] for p in t["squad"]}
+
+
+def test_lineup_then_reminder_then_review(sandbox, monkeypatch):
+    data = fake_fpl(deadline_hours=20)
+    boot = data[0]
     wire(monkeypatch, data)
     post.main([])
+    lineup = sandbox[-1]
+    print(lineup)
+    assert lineup.startswith("<b>⚽ FPL Gameweek 13 – our 3 teams</b>\nDeadline: <b>")
+    for k in ("<b>🟢 SAFE</b> · ", "<b>🟡 BALANCED</b> · ", "<b>🔴 BOLD</b> · ", "\nGK ", "\nDEF ", "\nMID ",
+              "\nFWD ", "(C)", "(V)", "Bench: ", "<i>Expected: ", "<b>🩹 Team news</b>", "<b>💡 Chips:</b>",
+              "Unofficial – not linked to the Premier League or FPL."):
+        assert k in lineup, k
+    assert lineup.count("<i>Expected: ") == 3 and " – no " in lineup
     sandbox.clear()
-    boot = data[0]
-    for e in boot["events"]:  # GW13 is now finished
+    post.main([])
+    assert sandbox == []                                    # lineup only once
+
+    # 2 hours before the deadline: one of the SAFE starters becomes doubtful
+    state = post.load_state()
+    starter = state["gw"]["13"]["teams"]["safe"]["xi"][3]
+    el = next(e for e in boot["elements"] if e["id"] == starter)
+    el["chance_of_playing_next_round"], el["status"] = 75, "d"
+    set_deadline(boot, 13, 2)
+    post.main([])
+    reminder = sandbox[-1]
+    print(reminder)
+    assert reminder.startswith("<b>⏰ FPL deadline in 2 hours</b>")
+    assert f"{el['web_name']} <b>doubtful</b> (75%) – check your bench order" in reminder
+    assert "Captain still: <b>" in reminder or "Captain: switch to" in reminder
+    assert reminder.rstrip().endswith("Don't forget to save your team!")
+
+    # gameweek 13 finishes -> review
+    sandbox.clear()
+    for e in boot["events"]:
         e["finished"] = e["data_checked"] = e["id"] <= 13
         e["is_current"], e["is_next"] = e["id"] == 13, e["id"] == 14
-    data[2]["current"].append({"event": 13, "points": 70, "overall_rank": 1, "event_transfers": 0,
-                               "event_transfers_cost": 0})
+    set_deadline(boot, 14, 100)
     post.main([])
-    assert any("Estimate check:" in m and "Our captain:" in m for m in sandbox)
+    review = sandbox[-1]
+    print(review)
+    assert review.startswith("<b>📊 GW13 review – how our teams did</b>")
+    for k in ("🟢 Safe: <b>", "🟡 Balanced: <b>", "🔴 Bold: <b>", "Average manager: 54 pts",
+              "<b>✅ Best call:</b>", "<b>❌ Worst call:</b>", "<b>Season so far:</b> Safe team is ahead of the average in"):
+        assert k in review, k
 
 
-def test_transfer_tiers_follow_the_rules():
-    boot, fixtures, history, picks, live = fake_fpl()
-    elements = {e["id"]: e for e in boot["elements"]}
-    tfix = fm.team_fixtures(fixtures, {13, 14, 15})
-    xp3 = {i: sum(fm.expected_points(e, tfix, [13, 14, 15], 12).values()) for i, e in elements.items()}
-    squad = [p["element"] for p in picks["picks"]]
-    plans = fm.transfer_plans(squad, elements, xp3, 1.5, {"hit_threshold": 4, "min_transfer_gain": 1})
-    for k in (1, 2, 3):
-        assert len(plans[k]) <= k
-        assert len({m["out"] for m in plans[k]}) == len(plans[k])   # never sell the same player twice
-    gains = [sum(m["gain"] for m in plans[k]) for k in (1, 2, 3)]
-    assert gains == sorted(gains)                                    # more transfers never plan less gain
+def test_auto_sub_and_vice_captain():
+    t = {"xi": [1, 2, 3], "bench": [10, 11], "captain": 2, "vice": 3}
+    pts = {1: 2, 2: 0, 3: 6, 10: 1, 11: 4}
+    mins = {1: 90, 2: 0, 3: 90, 10: 90, 11: 90}
+    # captain 2 didn't play: outfield sub 11 comes in (keeper 10 can't), vice 3 is doubled
+    assert post.team_points(t, pts, mins, keepers={1, 10}) == 2 + 6 + 4 + 6

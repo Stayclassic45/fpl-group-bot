@@ -1,12 +1,13 @@
-"""FPL group bot. Run: python post.py --dry-run --force
+"""Formline XI – FPL channel bot. Run: python post.py --dry-run --force
 
-Runs a few times a day (GitHub Actions) and posts, at most once each:
- - the LINEUP post about 30 hours before each FPL deadline: our XI with a reason and
-   estimated points per player, captain, bench, transfer plans for 1/2/3 free transfers,
-   and top buys by position for followers whose teams differ;
- - the HOW WE DID post after each gameweek: our points vs the average, and how the
-   estimates compared with real points.
-It only reads public FPL data and never changes any FPL team.
+Checks every hour (GitHub Actions) and posts, each only once per gameweek:
+ 1. LINEUP   ~30 hours before the deadline: our 3 teams (SAFE / BALANCED / BOLD),
+             team news and chip advice;
+ 2. REMINDER ~2 hours before the deadline: what changed since the lineup post and
+             the captain check;
+ 3. REVIEW   after the gameweek: how each team scored vs the average, best and
+             worst call, and the season record.
+Only public FPL data is read. No FPL team is ever changed.
 """
 import argparse
 import datetime as dt
@@ -17,12 +18,13 @@ from zoneinfo import ZoneInfo
 
 import yaml
 
-from fplbot import fpl_api as api, model as fm
+from fplbot import fpl_api as api, model as fm, squads
 from fplbot.telegram import send, esc
 
 ROOT = Path(__file__).resolve().parent
 STATE = ROOT / "data" / "state.json"
-POS = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
+STYLES = [("safe", "🟢", "SAFE"), ("balanced", "🟡", "BALANCED"), ("bold", "🔴", "BOLD")]
+FOOTER = "<i>Estimates, not guarantees. Unofficial – not linked to the Premier League or FPL.</i>"
 
 
 def load_state():
@@ -38,128 +40,199 @@ def when(iso, tz):
     return dt.datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(tz)
 
 
-def squad_for_next(team_id, cur_gw):
-    """The squad that will play the next GW (after a Free Hit, the week before's)."""
-    p = api.picks(team_id, cur_gw)
-    if p.get("active_chip") == "freehit" and cur_gw > 1:
-        prev = api.picks(team_id, cur_gw - 1)
-        prev["entry_history"] = p["entry_history"]
-        return prev
-    return p
+def chance(p):
+    c = p.get("chance_of_playing_next_round")
+    return 100 if c is None and p.get("status") == "a" else (c if c is not None else 0)
 
 
-def lineup_post(boot, fixtures, picks, gw_event, cfg, tz):
+def status_word(p):
+    c, news = chance(p), str(p.get("news") or "").lower()
+    if "knock" in news and c >= 75:
+        return "minor knock"
+    return {"i": "injured", "s": "suspended", "n": "unavailable", "u": "unavailable"}.get(p.get("status"), "doubtful")
+
+
+def expected_points(boot, fixtures, gw, cfg):
     elements = {e["id"]: e for e in boot["elements"]}
-    teams = {t["id"]: t for t in boot["teams"]}
-    gw = gw_event["id"]
     gws = [g for g in range(gw, gw + cfg["lookahead_gws"]) if g <= len(boot["events"])]
     finished = sum(1 for e in boot["events"] if e.get("finished"))
     tfix = fm.team_fixtures(fixtures, set(gws))
-    xp = {pid: fm.expected_points(e, tfix, gws, finished) for pid, e in elements.items()}
-    xp3 = {pid: sum(v.values()) for pid, v in xp.items()}
-    xp_next = {pid: v[gw] for pid, v in xp.items()}
+    xp = {pid: fm.expected_points(e, tfix, gws, finished)[gw] for pid, e in elements.items()}
+    return elements, xp
 
-    squad_ids = [p["element"] for p in picks["picks"]]
-    squad = [elements[i] for i in squad_ids]
-    bank = ((picks.get("entry_history") or {}).get("bank") or 0) / 10
-    xi, bench = fm.best_xi(squad, xp_next)
-    cap, vice = sorted(xi, key=lambda p: xp_next[p["id"]], reverse=True)[:2]
-    plans = fm.transfer_plans(squad_ids, elements, xp3, bank, cfg, tuple(cfg["transfer_tiers"]))
-    buys = fm.top_buys(elements, xp3, set(squad_ids), cfg["top_buys_per_position"])
 
-    n = lambda p: f"<b>{esc(p['web_name'])}</b>"
+# ------------------------------------------------------------------ 1. LINEUP
+def lineup_post(boot, fixtures, gw_event, cfg, tz):
+    gw = gw_event["id"]
+    elements, xp = expected_points(boot, fixtures, gw, cfg)
+    teams = {st: squads.build(elements, xp, st, cfg["budget"]) for st, _, _ in STYLES}
     deadline = when(gw_event["deadline_time"], tz)
-    total = sum(xp_next[p["id"]] for p in xi) + xp_next[cap["id"]]  # captain counts double
-    L = [f"⚽ <b>{esc(cfg['brand_name'])} – Gameweek {gw}</b> · deadline {deadline:%a %d %b %H:%M}", "",
-         "<b>📋 Our team this week</b>"]
-    for pos in (1, 2, 3, 4):
-        for p in sorted((q for q in xi if q["element_type"] == pos), key=lambda q: -xp_next[q["id"]]):
-            tag = " ©️" if p is cap else " (V)" if p is vice else ""
-            L.append(f"<b>{POS[pos]}</b> {n(p)}{tag} · {xp_next[p['id']]:.1f} pts")
-            L.append(f"   <i>{esc(fm.reason(p, tfix, gw, teams))}</i>")
-    L += ["", f"<b>©️ Captain:</b> {n(cap)} · <b>Vice:</b> {esc(vice['web_name'])}",
-          "<b>🪑 Bench:</b> " + esc(", ".join(p["web_name"] for p in bench)),
-          f"<b>Team total:</b> {total:.1f} expected pts (captain doubled)", "",
-          "<b>🔁 Transfer plans – pick the one that matches your free transfers</b>"]
+    most_owned = max(elements.values(), key=lambda p: float(p.get("selected_by_percent") or 0))
+    nm = lambda p: esc(p["web_name"])
 
-    def moves_text(moves):
-        return "; ".join(f"OUT {esc(elements[m['out']]['web_name'])} → IN {n(elements[m['in']])} "
-                         f"(£{elements[m['in']]['now_cost'] / 10:.1f}m)" for m in moves)
-    for k in cfg["transfer_tiers"]:
-        mv = plans.get(k) or []
-        if mv:
-            L.append(f"<b>{k} FT:</b> {moves_text(mv)} · <i>+{sum(m['gain'] for m in mv):.1f} pts over {len(gws)} GWs</i>")
+    L = [f"<b>⚽ FPL Gameweek {gw} – our 3 teams</b>",
+         f"Deadline: <b>{deadline:%a %H:%M}</b> (Irish time)"]
+    for st, icon, title in STYLES:
+        t = teams[st]
+        L += ["", f"<b>{icon} {title}</b> · {t['formation']} · £{t['cost']:.1f}m"]
+        if st == "safe":  # the main team in full
+            for pos, label in ((1, "GK"), (2, "DEF"), (3, "MID"), (4, "FWD")):
+                names = []
+                for p in sorted((q for q in t["xi"] if q["element_type"] == pos), key=lambda q: -xp[q["id"]]):
+                    tag = " (C)" if p is t["captain"] else " (V)" if p is t["vice"] else ""
+                    names.append(nm(p) + tag)
+                L.append(f"{label} " + " · ".join(names))
+            L.append("Bench: " + ", ".join(nm(p) for p in t["bench"]))
         else:
-            L.append(f"<b>{k} FT:</b> <i>no move worth making – roll the transfer</i>")
-    if plans.get("hit"):
-        L.append(f"<b>Taking a -4 hit?</b> {moves_text(plans['hit'])} · <i>+{plans['hit'][0]['gain']:.1f} pts – worth it</i>")
-    else:
-        L.append("<b>Taking a -4 hit?</b> <i>not worth it this week</i>")
-    L += ["", "<b>💡 Don't own these? Top buys by position</b> (next %d GWs)" % len(gws)]
-    for pos in (1, 2, 3, 4):
-        L.append(f"<b>{POS[pos]}</b> " + " · ".join(f"{esc(p['web_name'])} £{p['now_cost'] / 10:.1f}m ({xp3[p['id']]:.1f})"
-                                                for p in buys[pos]))
-    L += ["", "<i>Estimates, not guarantees. Based on our own team – adjust to yours.</i>"]
-    predicted = {str(p["id"]): round(xp_next[p["id"]], 2) for p in xi}
-    return "\n".join(L), {"captain": cap["id"], "predicted": predicted}
+            extra = f" – no {nm(most_owned)}" if st == "bold" else ""
+            L.append(f"Captain {nm(t['captain'])} · Vice {nm(t['vice'])}{extra}")
+        L.append(f"<i>Expected: {t['expected']:.0f} pts</i>")
+
+    # Team news: our players and widely-owned players with a doubt
+    in_xi = {p["id"] for t in teams.values() for p in t["xi"]}
+    in_squad = {p["id"] for t in teams.values() for p in t["squad"]}
+    popular = sorted(elements.values(), key=lambda p: -float(p.get("selected_by_percent") or 0))[:20]
+    news = []
+    for p in {q["id"]: q for q in popular + [elements[i] for i in in_squad]}.values():
+        if chance(p) >= 100:
+            continue
+        action = ("bench covers him" if p["id"] in in_xi else
+                  "on our bench" if p["id"] in in_squad else "left out")
+        news.append(f"• {nm(p)} {status_word(p)} ({chance(p)}%) – {action}")
+    L += ["", "<b>🩹 Team news</b>"] + (news[:6] or ["• No injury worries for our teams"])
+    L += ["", f"<b>💡 Chips:</b> {esc(squads.chip_tip(fixtures, len(boot['teams']), gw))}", "", FOOTER]
+
+    saved = {"posted_at": dt.datetime.now(tz).isoformat(),
+             "most_owned": most_owned["id"],
+             "teams": {st: {"xi": [p["id"] for p in t["xi"]], "bench": [p["id"] for p in t["bench"]],
+                            "captain": t["captain"]["id"], "vice": t["vice"]["id"]} for st, t in teams.items()},
+             "xp": {str(i): round(xp[i], 2) for i in in_squad},
+             "chance": {str(i): chance(elements[i]) for i in in_squad}}
+    return "\n".join(L), saved
 
 
-def result_post(gw, boot, hist, live, saved, cfg):
-    cur = {h["event"]: h for h in hist.get("current", [])}
-    h = cur.get(gw)
-    if not h:
-        return None
+# ---------------------------------------------------------------- 2. REMINDER
+def reminder_post(boot, gw_event, saved, tz, now):
     elements = {e["id"]: e for e in boot["elements"]}
-    ev = next((e for e in boot["events"] if e["id"] == gw), {})
-    pts = {e["id"]: e["stats"]["total_points"] for e in live.get("elements", [])}
-    L = [f"📊 <b>{esc(cfg['brand_name'])} – Gameweek {gw} result</b>", "",
-         f"<b>Our points:</b> {h['points'] - (h.get('event_transfers_cost') or 0)}"
-         + (f" · average {ev['average_entry_score']}" if ev.get("average_entry_score") else "")]
-    if cfg.get("show_rank") and h.get("overall_rank"):
-        L.append(f"<b>Overall rank:</b> {h['overall_rank']:,}")
-    if saved:
-        cap = saved.get("captain")
-        if cap:
-            L.append(f"<b>Our captain:</b> {esc(elements.get(cap, {}).get('web_name', '?'))} – "
-                     f"{pts.get(cap, 0)} pts ({pts.get(cap, 0) * 2} doubled)")
-        pred = saved.get("predicted") or {}
-        if pred:
-            est = sum(pred.values())
-            real = sum(pts.get(int(i), 0) for i in pred)
-            L.append(f"<b>Estimate check:</b> starting XI predicted {est:.0f} pts, scored {real} pts")
-            best = sorted(pred, key=lambda i: pts.get(int(i), 0), reverse=True)[:3]
-            L.append("<b>Top scorers:</b> " + ", ".join(
-                f"{esc(elements.get(int(i), {}).get('web_name', '?'))} {pts.get(int(i), 0)}" for i in best))
-    L += ["", "<i>Estimates, not guarantees.</i>"]
+    deadline = when(gw_event["deadline_time"], tz)
+    hours = max(1, round((deadline - now.astimezone(tz)).total_seconds() / 3600))
+    since = dt.datetime.fromisoformat(saved["posted_at"]).strftime("%A")
+    safe = saved["teams"]["safe"]
+    our_xi = {i for t in saved["teams"].values() for i in t["xi"]}
+    changes = []
+    for i, before in saved["chance"].items():
+        p = elements.get(int(i))
+        if not p:
+            continue
+        now_c = chance(p)
+        if before < 100 <= now_c:
+            changes.append(f"• {esc(p['web_name'])} now <b>fit</b> – keep him")
+        elif now_c < before:
+            if now_c == 0:
+                changes.append(f"• {esc(p['web_name'])} <b>out</b> – " +
+                               ("swap him with your bench" if int(i) in our_xi else "not in our starting teams"))
+            else:
+                changes.append(f"• {esc(p['web_name'])} <b>{status_word(p)}</b> ({now_c}%) – check your bench order")
+    cap, vice = elements[safe["captain"]], elements[safe["vice"]]
+    L = [f"<b>⏰ FPL deadline in {hours} hour{'s' if hours != 1 else ''}</b> ({deadline:%H:%M})", "",
+         f"<b>Changes since {since}:</b>"] + (changes or ["• None – our teams stand as posted"]) + [""]
+    if chance(cap) < 75:
+        L.append(f"Captain: switch to <b>{esc(vice['web_name'])}</b> 🅲 ({esc(cap['web_name'])} is a doubt)")
+    else:
+        L.append(f"Captain still: <b>{esc(cap['web_name'])}</b> 🅲")
+    L += ["", "Don't forget to save your team!"]
     return "\n".join(L)
 
 
+# ------------------------------------------------------------------ 3. REVIEW
+def team_points(t, pts, mins, keepers):
+    """Points with simple auto-subs (non-playing starter -> first bench player who
+    played, keeper for keeper) and the vice taking over a non-playing captain."""
+    xi, bench = list(t["xi"]), list(t["bench"])
+    for i in list(xi):
+        if mins.get(i, 0) == 0:
+            sub = next((b for b in bench if mins.get(b, 0) > 0 and ((b in keepers) == (i in keepers))), None)
+            if sub:
+                bench.remove(sub)
+                xi[xi.index(i)] = sub
+    cap = t["captain"] if mins.get(t["captain"], 0) > 0 else t["vice"]
+    return sum(pts.get(i, 0) for i in xi) + pts.get(cap, 0)
+
+
+def review_post(gw, boot, live, saved, season):
+    elements = {e["id"]: e for e in boot["elements"]}
+    ev = next((e for e in boot["events"] if e["id"] == gw), {})
+    stats = {e["id"]: e["stats"] for e in live.get("elements", [])}
+    pts = {i: s["total_points"] for i, s in stats.items()}
+    mins = {i: s.get("minutes", 0) for i, s in stats.items()}
+    keepers = {i for i, p in elements.items() if p["element_type"] == 1}
+    score = {st: team_points(saved["teams"][st], pts, mins, keepers) for st, _, _ in STYLES}
+    avg = ev.get("average_entry_score")
+    L = [f"<b>📊 GW{gw} review – how our teams did</b>", ""]
+    for st, icon, title in STYLES:
+        L.append(f"{icon} {title.title()}: <b>{score[st]} pts</b>")
+    if avg is not None:
+        L.append(f"Average manager: {avg} pts")
+
+    caps = {saved["teams"][st]["captain"] for st, _, _ in STYLES}
+    best = max(caps, key=lambda i: pts.get(i, 0))
+    L += ["", f"<b>✅ Best call:</b> {esc(elements[best]['web_name'])} captain "
+              f"({pts.get(best, 0)} pts → {2 * pts.get(best, 0)})"]
+    left_out = saved.get("most_owned")
+    if left_out and min(score, key=score.get) == "bold" and pts.get(left_out, 0) >= 8:
+        worst = (f"Bold team without {esc(elements[left_out]['web_name'])} – it didn't pay off this week")
+    else:
+        starters = {i for t in saved["teams"].values() for i in t["xi"]}
+        miss = max(starters, key=lambda i: saved["xp"].get(str(i), 0) - pts.get(i, 0))
+        worst = (f"{esc(elements[miss]['web_name'])} – expected {saved['xp'].get(str(miss), 0):.0f} pts, "
+                 f"scored {pts.get(miss, 0)}")
+    L.append(f"<b>❌ Worst call:</b> {worst}")
+    if avg is not None:
+        season["gws"] = season.get("gws", 0) + 1
+        season["safe_ahead"] = season.get("safe_ahead", 0) + (1 if score["safe"] > avg else 0)
+        L += ["", f"<b>Season so far:</b> Safe team is ahead of the average in "
+                  f"{season['safe_ahead']} of {season['gws']} gameweek{'s' if season['gws'] != 1 else ''}."]
+    L += ["", FOOTER]
+    return "\n".join(L)
+
+
+# --------------------------------------------------------------------- main
 def run(args, cfg):
     tz = ZoneInfo(cfg["timezone"])
-    team = cfg["fpl_team_id"]
     state = load_state()
-    boot, fixtures, hist = api.bootstrap(), api.fixtures(), api.history(team)
+    boot, fixtures = api.bootstrap(), api.fixtures()
     events = boot["events"]
     cur = next((e for e in events if e.get("is_current")), None)
     nxt = next((e for e in events if e.get("is_next")), None)
     now = dt.datetime.now(dt.timezone.utc)
     changed = False
 
+    # 3. review of the gameweek that just finished
     if cur and cur.get("finished") and cur.get("data_checked") and state.get("result_gw") != cur["id"]:
-        msg = result_post(cur["id"], boot, hist, api.live(cur["id"]), state.get("gw", {}).get(str(cur["id"])), cfg)
-        if msg and send(msg, args.dry_run):
-            state["result_gw"], changed = cur["id"], True
+        saved = state.get("gw", {}).get(str(cur["id"]))
+        if saved and "teams" in saved:  # weeks posted in the old single-team format are skipped
+            season = state.setdefault("season", {})
+            if send(review_post(cur["id"], boot, api.live(cur["id"]), saved, season), args.dry_run):
+                state["result_gw"], changed = cur["id"], True
+        else:
+            state["result_gw"], changed = cur["id"], True  # nothing posted that week: skip
 
-    if nxt and cur:
+    if nxt:
         hours = (when(nxt["deadline_time"], dt.timezone.utc) - now).total_seconds() / 3600
-        due = 0 < hours <= cfg["lineup_hours_before"] and state.get("lineup_gw") != nxt["id"]
-        if due or args.force:
-            msg, saved = lineup_post(boot, fixtures, squad_for_next(team, cur["id"]), nxt, cfg, tz)
+        key = str(nxt["id"])
+        # 1. lineup
+        if (0 < hours <= cfg["lineup_hours_before"] and state.get("lineup_gw") != nxt["id"]) or args.force:
+            msg, saved = lineup_post(boot, fixtures, nxt, cfg, tz)
             if send(msg, args.dry_run):
                 state["lineup_gw"], changed = nxt["id"], True
-                state.setdefault("gw", {})[str(nxt["id"])] = saved
+                state.setdefault("gw", {})[key] = saved
+        # 2. reminder
+        elif (0 < hours <= cfg["reminder_hours_before"] and state.get("reminder_gw") != nxt["id"]
+              and key in state.get("gw", {})) or (args.reminder and key in state.get("gw", {})):
+            if send(reminder_post(boot, nxt, state["gw"][key], tz, now), args.dry_run):
+                state["reminder_gw"], changed = nxt["id"], True
         else:
-            print(f"Next deadline in {hours:.0f} hours – lineup not due yet.")
+            print(f"Next deadline in {hours:.1f} hours – nothing due.")
     if changed and not args.dry_run:
         save_state(state)
     return 0
@@ -169,6 +242,7 @@ def main(argv=None):
     p = argparse.ArgumentParser()
     p.add_argument("--dry-run", action="store_true", help="print instead of posting")
     p.add_argument("--force", action="store_true", help="post this week's lineup now")
+    p.add_argument("--reminder", action="store_true", help="post the deadline reminder now")
     args = p.parse_args(argv)
     cfg = yaml.safe_load((ROOT / "config.yaml").read_text())
     try:

@@ -1,13 +1,17 @@
-# Checks 4 times a day; posts the lineup ~30 hours before each FPL deadline
-# and the result after each gameweek (each only once).
+# Formline XI: checks every hour; posts our 3 teams ~30 hours before each FPL
+# deadline, a reminder ~2 hours before, and a review after each gameweek (each once).
 name: FPL group posts
 on:
   schedule:
-    - cron: "23 */6 * * *"
+    - cron: "23 * * * *"
   workflow_dispatch:
     inputs:
       force:
-        description: "Post this week's lineup now"
+        description: "Post this week's 3 teams now"
+        type: boolean
+        default: false
+      reminder:
+        description: "Post the deadline reminder now"
         type: boolean
         default: false
       dry_run:
@@ -34,7 +38,7 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - name: Post what is due
-        run: python post.py ${{ inputs.force && '--force' || '' }} ${{ inputs.dry_run && '--dry-run' || '' }}
+        run: python post.py ${{ inputs.force && '--force' || '' }} ${{ inputs.reminder && '--reminder' || '' }} ${{ inputs.dry_run && '--dry-run' || '' }}
       - name: Remember what was posted
         if: always()
         run: |

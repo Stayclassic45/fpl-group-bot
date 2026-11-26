@@ -23,7 +23,8 @@ def fake_fpl(deadline_hours=20):
                                  "points_per_game": f"{rnd.uniform(1, 7):.1f}", "minutes": rnd.randint(0, 1080),
                                  "starts": rnd.randint(0, 12), "status": "a", "chance_of_playing_next_round": None,
                                  "goals_scored": rnd.randint(0, 9), "assists": rnd.randint(0, 6),
-                                 "clean_sheets": rnd.randint(0, 6)})
+                                 "clean_sheets": rnd.randint(0, 6),
+                                 "selected_by_percent": f"{rnd.uniform(0, 40):.1f}", "news": ""})
                 pid += 1
     events = []
     for g in range(1, 39):
@@ -52,7 +53,7 @@ def fake_fpl(deadline_hours=20):
                "chips": [{"name": "wildcard", "event": 5}]}
     picks = {"active_chip": None, "entry_history": {"bank": 15},
              "picks": [{"element": s, "is_captain": i == 0} for i, s in enumerate(squad)]}
-    live = {"elements": [{"id": e["id"], "stats": {"total_points": 5}} for e in elements]}
+    live = {"elements": [{"id": e["id"], "stats": {"total_points": e["id"] % 13, "minutes": 90}} for e in elements]}
     return boot, fixtures, history, picks, live
 
 
