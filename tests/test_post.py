@@ -7,7 +7,7 @@ import post
 from fplbot import squads
 from tests.fake_fpl import fake_fpl
 
-CFG = {"budget": 100.0, "lookahead_gws": 3, "lineup_hours_before": 30, "reminder_hours_before": 2.5,
+CFG = {"budget": 100.0, "min_spend": 97.0, "lookahead_gws": 3, "lineup_hours_before": 30, "reminder_hours_before": 2.5,
        "timezone": "Europe/Dublin"}
 
 
@@ -37,8 +37,8 @@ def test_three_teams_follow_fpl_rules():
     boot["elements"][0]["chance_of_playing_next_round"] = 50
     most = max(elements.values(), key=lambda p: float(p["selected_by_percent"]))["id"]
     for style in ("safe", "balanced", "bold"):
-        t = squads.build(elements, xp, style, 100.0)
-        assert len(t["squad"]) == 15 and len(t["xi"]) == 11 and t["cost"] <= 100.0
+        t = squads.build(elements, xp, style, 100.0, 97.0)
+        assert len(t["squad"]) == 15 and len(t["xi"]) == 11 and 97.0 <= t["cost"] <= 100.0
         assert Counter(p["element_type"] for p in t["squad"]) == {1: 2, 2: 5, 3: 5, 4: 3}
         assert max(Counter(p["team"] for p in t["squad"]).values()) <= 3
         f = Counter(p["element_type"] for p in t["xi"])
@@ -107,6 +107,7 @@ def test_auto_sub_and_vice_captain():
 def test_fpl_forecast_is_blended_in():
     boot, fixtures, *_ = fake_fpl()
     _, ours = post.expected_points(boot, fixtures, 13, CFG | {"fpl_forecast_weight": 0.6})
+    assert ours
     boot["elements"][0]["ep_next"] = "10.0"
     _, blended = post.expected_points(boot, fixtures, 13, CFG | {"fpl_forecast_weight": 0.6})
     i = boot["elements"][0]["id"]

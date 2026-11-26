@@ -5,8 +5,11 @@ brand_name: Formline XI
 timezone: Europe/Dublin
 
 budget: 100.0                 # £m for each of the 3 teams
+min_spend: 97.0               # each team must use at least this much (keeps premiums in)
 lineup_hours_before: 30       # post "our 3 teams" this many hours before the deadline
 reminder_hours_before: 2.5    # post the deadline reminder this close to the deadline
 lookahead_gws: 3
 # How much to trust FPL's own forecast (ep_next) vs our form model (0 = ours only, 1 = FPL only)
-fpl_forecast_weight: 0.6
+fpl_forecast_weight: 0.3
+# How much recent form counts vs whole-season points per game (lower = steadier picks)
+form_weight: 0.25

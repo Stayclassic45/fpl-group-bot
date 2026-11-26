@@ -57,7 +57,8 @@ def expected_points(boot, fixtures, gw, cfg):
     gws = [g for g in range(gw, gw + cfg["lookahead_gws"]) if g <= len(boot["events"])]
     finished = sum(1 for e in boot["events"] if e.get("finished"))
     tfix = fm.team_fixtures(fixtures, set(gws))
-    ours = {pid: fm.expected_points(e, tfix, gws, finished)[gw] for pid, e in elements.items()}
+    fw = cfg.get("form_weight", 0.25)
+    ours = {pid: fm.expected_points(e, tfix, gws, finished, fw)[gw] for pid, e in elements.items()}
     # Blend with FPL's own official forecast (ep_next) when it is available: our model
     # alone leans too much on short-term form and undervalues premium players.
     w = cfg.get("fpl_forecast_weight", 0.6)
@@ -75,7 +76,7 @@ def expected_points(boot, fixtures, gw, cfg):
 def lineup_post(boot, fixtures, gw_event, cfg, tz):
     gw = gw_event["id"]
     elements, xp = expected_points(boot, fixtures, gw, cfg)
-    teams = {st: squads.build(elements, xp, st, cfg["budget"]) for st, _, _ in STYLES}
+    teams = {st: squads.build(elements, xp, st, cfg["budget"], cfg.get("min_spend", 0)) for st, _, _ in STYLES}
     deadline = when(gw_event["deadline_time"], tz)
     most_owned = max(elements.values(), key=lambda p: float(p.get("selected_by_percent") or 0))
     nm = lambda p: esc(p["web_name"])

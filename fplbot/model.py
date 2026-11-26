@@ -33,8 +33,9 @@ def availability(p):
     return {"a": 1.0, "d": 0.5}.get(p.get("status"), 0.0)
 
 
-def expected_points(p, tfix, gws, finished_gws):
-    base = 0.5 * float(p.get("form") or 0) + 0.5 * float(p.get("points_per_game") or 0)
+def expected_points(p, tfix, gws, finished_gws, form_weight=0.5):
+    # form = recent weeks, points_per_game = whole season; less form = steadier picks
+    base = form_weight * float(p.get("form") or 0) + (1 - form_weight) * float(p.get("points_per_game") or 0)
     if finished_gws:
         share = max(p.get("starts", 0) / finished_gws, p.get("minutes", 0) / (90 * finished_gws))
         share = min(1.0, share)
