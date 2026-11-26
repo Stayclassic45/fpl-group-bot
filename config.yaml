@@ -1,0 +1,22 @@
+# ============================================================
+#  FPL group bot – settings (edit on GitHub with the ✏️ pencil)
+# ============================================================
+brand_name: EdgeFinder Fantasy     # shown at the top of every post
+timezone: Europe/Dublin
+
+# Your FPL team number (the base team for the lineup and transfer plans).
+# It is never shown in the posts.
+fpl_team_id: 5879611
+
+# When to post the lineup: this many hours before each deadline (once per gameweek)
+lineup_hours_before: 30
+
+# Show the team's overall rank in "how we did" posts? (rank can identify the team)
+show_rank: false
+
+# Transfer plans to show (number of free transfers)
+transfer_tiers: [1, 2, 3]
+lookahead_gws: 3
+hit_threshold: 4.0          # a -4 hit must gain more than this over the next GWs
+min_transfer_gain: 1.0      # don't suggest a free transfer gaining less than this
+top_buys_per_position: 2
