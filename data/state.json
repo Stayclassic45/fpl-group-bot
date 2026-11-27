@@ -125,5 +125,6 @@
     }
   },
   "lineup_gw": 12,
+  "reminder_gw": 12,
   "result_gw": 11
 }
